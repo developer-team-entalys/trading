@@ -13,6 +13,7 @@ services:
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./database/001_schema.sh:/docker-entrypoint-initdb.d/001_schema.sh
       - timescale_data:/var/lib/postgresql/data
+      - ./backups:/backups
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -34,6 +35,8 @@ services:
       - ./bot/src:/app/src
       - model_data:/app/models
       - ./database/init.sql:/app/init.sql:ro
+      - ./scripts:/app/scripts:ro
+      - ./backups:/app/backups
     restart: unless-stopped
     command: python src/main.py
     networks:

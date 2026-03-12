@@ -115,6 +115,49 @@ Shows the latest 20 rows of every table (candles, cot_data, sentiment_data, sign
 
 ---
 
+## Backup & Restore
+
+### Automatic schedule
+- **Host cron** (primary): runs `scripts/backup.sh` every day at 03:00 UTC
+- **APScheduler** (safety net): runs the same script at 03:15 UTC from inside the bot container
+
+Backups land in `backups/usdjpy_YYYY-MM-DD_HH-MM.sql.gz`. Files older than 14 days are pruned automatically.
+
+### Install host cron job (one-time setup)
+```bash
+cd /home/christel/repos/trading/usdjpy-bot
+PROJECT_DIR=$(pwd)
+(crontab -l 2>/dev/null; echo "0 3 * * * $PROJECT_DIR/scripts/backup.sh >> $PROJECT_DIR/backups/backup.log 2>&1") | crontab -
+crontab -l   # verify
+```
+
+### Manual backup
+```bash
+./scripts/backup.sh
+```
+
+### List backups
+```bash
+ls -lh backups/*.sql.gz
+```
+
+### Restore
+```bash
+# Restore latest backup (prompts for confirmation)
+./scripts/restore.sh
+
+# Restore a specific file
+./scripts/restore.sh backups/usdjpy_2025-01-15_03-00.sql.gz
+```
+
+### Backup logs
+```bash
+tail -f backups/backup.log        # host cron log
+docker compose logs bot | grep backup  # APScheduler log
+```
+
+---
+
 ## Risk Disclaimer
 
 This bot trades real money on a live account when configured with live credentials.

@@ -3,7 +3,9 @@ main.py — Entry point and APScheduler orchestration for the USD/JPY trading bo
 """
 import asyncio
 import logging
+import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -215,6 +217,31 @@ async def monthly_rate_refresh():
         await send_error("Monthly rate refresh failed", str(exc))
 
 
+def run_daily_backup():
+    """Safety-net backup job — runs backup.sh via subprocess. No-op if script absent."""
+    script = "/app/scripts/backup.sh"
+    if not os.path.exists(script):
+        log.info("run_daily_backup.skipped", reason="script_not_found")
+        return
+    try:
+        result = subprocess.run(
+            [script],
+            timeout=120,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            log.info("run_daily_backup.success", stdout=result.stdout.strip())
+        else:
+            log.error("run_daily_backup.failed",
+                      returncode=result.returncode,
+                      stderr=result.stderr.strip())
+    except subprocess.TimeoutExpired:
+        log.error("run_daily_backup.timeout")
+    except Exception as exc:
+        log.error("run_daily_backup.error", error=str(exc))
+
+
 def _compute_weekly_stats(engine) -> dict:
     from sqlalchemy import text
     from datetime import date, timedelta
@@ -369,6 +396,12 @@ async def startup():
     scheduler.add_job(sunday_weekly_refresh, CronTrigger(day_of_week="sun", hour=0), id="sunday_refresh")
     scheduler.add_job(daily_rollover_refresh, CronTrigger(hour=6, minute=0), id="daily_rollover")
     scheduler.add_job(monthly_rate_refresh, CronTrigger(day=1, hour=7, minute=0), id="monthly_rates")
+    scheduler.add_job(
+        run_daily_backup,
+        CronTrigger(hour=3, minute=15, timezone="UTC"),
+        id="daily_backup",
+        replace_existing=True,
+    )
     scheduler.start()
 
     next_run = datetime.now(timezone.utc) + timedelta(minutes=config.SENTIMENT_INTERVAL_MIN)
