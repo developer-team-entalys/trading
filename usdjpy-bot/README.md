@@ -1,3 +1,9 @@
+# TODO
+
+- add also the DoM data from ctraders
+- get VIX (Fear Index) data from FRED
+- Nikkei daily data from returnYahoo Finance (free, no key)
+
 # USD/JPY Algorithmic Trading Bot
 
 An automated trading bot for USD/JPY that combines:
@@ -165,3 +171,4 @@ Past performance of any strategy does not guarantee future results.
 Forex trading involves significant risk of loss.
 The €50 daily drawdown cap and 1% per-trade risk limit are minimums — review them carefully before enabling live trading.
 The authors accept no responsibility for financial losses.
+
