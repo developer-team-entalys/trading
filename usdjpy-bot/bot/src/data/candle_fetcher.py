@@ -273,6 +273,15 @@ class CTraderSession:
         req.includeArchivedSymbols = False
 
         def on_symbols(resp):
+            from ctrader_open_api import Protobuf
+            resp = Protobuf.extract(resp)
+            if not hasattr(resp, 'symbol'):
+                if not result_future.done():
+                    loop.call_soon_threadsafe(
+                        result_future.set_exception,
+                        ConnectionError(f"cTrader error response: {type(resp).__name__}")
+                    )
+                return
             for sym in resp.symbol:
                 if sym.symbolName == symbol:
                     if not result_future.done():

@@ -53,15 +53,33 @@ def download_cot_year(year: int) -> pd.DataFrame:
         with z.open(csv_name) as f:
             df = pd.read_csv(f, low_memory=False)
 
-    # Keep only columns we need (skip missing ones gracefully)
-    available = {k: v for k, v in COT_COLUMN_MAP.items() if k in df.columns}
+    # Detect date column — new format (2013+) vs old format (pre-2013)
+    if "Report_Date_as_YYYY-MM-DD" in df.columns:
+        date_col = "Report_Date_as_YYYY-MM-DD"
+        date_fmt = None  # pandas auto-detects YYYY-MM-DD
+    elif "As_of_Date_In_Form_YYMMDD" in df.columns:
+        date_col = "As_of_Date_In_Form_YYMMDD"
+        date_fmt = "%y%m%d"
+    else:
+        raise ValueError(f"No date column found. Available cols: {list(df.columns[:8])}")
+
+    # Build column map with the right date column
+    col_map = {k: v for k, v in COT_COLUMN_MAP.items() if k != "Report_Date_as_YYYY-MM-DD"}
+    col_map[date_col] = "week_date"
+
+    available = {k: v for k, v in col_map.items() if k in df.columns}
     df = df[list(available.keys())].rename(columns=available)
 
     # Filter for JPY futures
     df = df[df["market_name"] == JPY_MARKET_NAME].copy()
     df = df.drop(columns=["market_name"])
 
-    df["week_date"] = pd.to_datetime(df["week_date"]).dt.date
+    if date_fmt:
+        df["week_date"] = pd.to_datetime(
+            df["week_date"].astype(str).str.zfill(6), format=date_fmt
+        ).dt.date
+    else:
+        df["week_date"] = pd.to_datetime(df["week_date"]).dt.date
 
     for col in ["noncomm_long", "noncomm_short", "comm_long", "comm_short", "open_interest"]:
         if col in df.columns:

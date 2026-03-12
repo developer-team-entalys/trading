@@ -135,6 +135,90 @@
           }
         }
       }
+    },
+    {
+      "id": 9,
+      "title": "Interest Rate Differential (Fed - BOJ)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 22, "w": 16, "h": 8},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT date::timestamptz AS time, rate_differential AS \"Fed - BOJ (%)\", fed_rate_pct AS \"Fed Rate (%)\", boj_rate_pct AS \"BOJ Rate (%)\" FROM rollover_data ORDER BY date ASC",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 0}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Daily Swap Earnings (Long 0.1 lots)",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 22, "w": 4, "h": 4},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT swap_long_eur AS \"EUR/night\" FROM rollover_data ORDER BY date DESC LIMIT 1",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyEUR",
+          "decimals": 4
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Carry Strength",
+      "type": "gauge",
+      "gridPos": {"x": 20, "y": 22, "w": 4, "h": 4},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT carry_strength AS \"Carry Strength\" FROM rollover_data ORDER BY date DESC LIMIT 1",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 0.4},
+              {"color": "green", "value": 0.7}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Swap Collected vs Trade PnL",
+      "type": "timeseries",
+      "gridPos": {"x": 16, "y": 26, "w": 8, "h": 4},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT opened_at AS time, pnl_eur AS \"Price PnL (EUR)\", swap_earned_eur AS \"Swap Earned (EUR)\", (pnl_eur + swap_earned_eur) AS \"Total Return (EUR)\" FROM trades WHERE closed_at IS NOT NULL ORDER BY opened_at ASC",
+          "format": "time_series"
+        }
+      ]
     }
   ],
   "templating": {

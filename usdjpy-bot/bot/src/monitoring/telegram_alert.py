@@ -29,10 +29,17 @@ async def _send(text: str) -> None:
         log.error(f"Telegram send failed: {exc}")
 
 
-async def send_bot_started(next_signal_time: datetime) -> None:
+async def send_bot_started(next_signal_time: datetime, rollover: dict = None) -> None:
+    carry_line = ""
+    if rollover and rollover.get("rate_differential") is not None:
+        carry_line = (
+            f"\nCarry: {rollover['rate_differential']:+.2f}% | "
+            f"Swap Long: {rollover.get('swap_long_eur', 0.0):+.4f} EUR/night"
+        )
     await _send(
         f"🟢 <b>USD/JPY Bot started</b> ✅\n"
         f"Next signal check: {next_signal_time.strftime('%H:%M UTC')}"
+        + carry_line
     )
 
 
@@ -69,6 +76,8 @@ async def send_order_placed(details: dict) -> None:
 async def send_order_closed(details: dict) -> None:
     pnl = details.get("pnl_eur", 0)
     pips = details.get("pnl_pips", 0)
+    swap = details.get("swap_earned_eur", 0.0)
+    total = pnl + swap
     reason_labels = {
         "sl": "Stop Loss hit",
         "tp": "Take Profit hit",
@@ -78,7 +87,7 @@ async def send_order_closed(details: dict) -> None:
     reason = reason_labels.get(details.get("close_reason", ""), details.get("close_reason", ""))
     await _send(
         f"📉 <b>Position closed</b>\n"
-        f"{reason} | PnL: {pnl:+.2f} EUR ({pips:+.1f} pips)"
+        f"{reason} | PnL: {pnl:+.2f} EUR | Swap: {swap:+.2f} EUR | Total: {total:+.2f} EUR ({pips:+.1f} pips)"
     )
 
 

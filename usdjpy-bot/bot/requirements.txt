@@ -22,8 +22,12 @@ apscheduler==3.10.4
 
 # Telegram
 python-telegram-bot==20.8
+service-identity==24.2.0
 
 # Utilities
 python-dotenv==1.0.1
 pytz==2024.1
 structlog==24.1.0
+
+# FRED API (Federal Reserve Economic Data)
+fredapi==0.5.2

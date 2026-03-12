@@ -78,6 +78,11 @@ COT_URL: str = os.getenv(
     "https://www.cftc.gov/files/dea/history/fut_fin_txt_{year}.zip"
 )
 
+# ── FRED API ──────────────────────────────────────────────────
+FRED_API_KEY: str = os.getenv("FRED_API_KEY", "")
+FRED_FED_RATE_SERIES: str = os.getenv("FRED_FED_RATE_SERIES", "FEDFUNDS")
+FRED_BOJ_RATE_SERIES: str = os.getenv("FRED_BOJ_RATE_SERIES", "IRSTCI01JPM156N")
+
 # ── Required variables for live trading ──────────────────────
 REQUIRED_FOR_TRADING = [
     "DATABASE_URL",
@@ -111,5 +116,11 @@ def validate_db() -> None:
 
 def validate() -> None:
     """Full config + DB validation."""
+    import logging as _logging
     validate_required()
+    if not FRED_API_KEY:
+        _logging.warning(
+            "FRED_API_KEY not set. Rollover signal will use swap points from cTrader only "
+            "(no rate differential). Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html"
+        )
     validate_db()

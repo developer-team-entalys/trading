@@ -35,6 +35,8 @@ FEATURE_COLS_P1 = [
     "near_round",
     "session",
     "rollover_direction",
+    "rate_differential",
+    "carry_strength",
 ]
 
 FEATURE_COLS_P2 = FEATURE_COLS_P1 + [
@@ -158,7 +160,29 @@ def build_training_dataset(engine, training_phase: int = 1) -> tuple:
     session_map = {"tokyo": 0, "london": 1, "new_york": 2, "overlap": 3}
     df["session"] = df["session"].map(session_map).fillna(0).astype(int)
 
-    df["rollover_direction"] = 1
+    # Derived rollover/carry features from FRED interest rate history
+    from data.rollover_fetcher import get_historical_rate_differential
+    rates_df = get_historical_rate_differential(engine)
+    if not rates_df.empty:
+        df["candle_date"] = pd.to_datetime(df["time"]).dt.date
+        rates_df = rates_df.copy()
+        rates_df["date"] = pd.to_datetime(rates_df["date"]).dt.date
+        df = df.sort_values("time").reset_index(drop=True)
+        rates_df = rates_df.sort_values("date").reset_index(drop=True)
+        df = pd.merge_asof(
+            df,
+            rates_df[["date", "rate_differential", "rollover_direction", "carry_strength"]],
+            left_on="candle_date",
+            right_on="date",
+            direction="backward",
+        )
+        df["rate_differential"]  = df["rate_differential"].fillna(0.0)
+        df["rollover_direction"] = df["rollover_direction"].fillna(1)
+        df["carry_strength"]     = df["carry_strength"].fillna(0.0)
+    else:
+        df["rate_differential"]  = 0.0
+        df["rollover_direction"] = 1
+        df["carry_strength"]     = 0.0
 
     # Derived sentiment features (Phase 2 only)
     if training_phase == 2:

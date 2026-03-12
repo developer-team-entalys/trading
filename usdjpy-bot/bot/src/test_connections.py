@@ -23,7 +23,10 @@ def test_database():
         from sqlalchemy import text
 
         engine = sqlalchemy.create_engine(config.DATABASE_URL)
-        required_tables = ["candles", "cot_data", "sentiment_data", "signals", "trades", "model_performance"]
+        required_tables = [
+            "candles", "cot_data", "sentiment_data", "signals", "trades",
+            "model_performance", "rollover_data", "interest_rates", "news_events",
+        ]
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             for table in required_tables:
@@ -141,6 +144,58 @@ async def test_telegram():
         return False
 
 
+def test_rollover_data():
+    """
+    Test FRED API connection and print current rate snapshot.
+
+    PASS: API key set and FRED returns Fed + BOJ rates
+    SKIP: FRED_API_KEY not set in .env
+    FAIL: API key set but FRED returns error
+
+    Swap point values show as 0.0 — requires live cTrader connection.
+    """
+    print("\n--- Rollover Data (FRED API) ---")
+    import config
+    from data.rollover_fetcher import download_interest_rate_history, compute_rollover_signal
+
+    if not config.FRED_API_KEY:
+        print(f"  {SKIP} FRED_API_KEY not set — rollover uses swap points from cTrader only")
+        print("         Get free key at https://fred.stlouisfed.org/docs/api/api_key.html")
+        return True
+
+    try:
+        df = download_interest_rate_history(config.FRED_API_KEY)
+        if df.empty:
+            print(f"  {FAIL} FRED returned empty DataFrame — check API key")
+            return False
+
+        fed_df = df[df["series"] == "FEDFUNDS"].sort_values("date")
+        boj_df = df[df["series"] == "IRSTCI01JPM156N"].sort_values("date")
+
+        if fed_df.empty or boj_df.empty:
+            print(f"  {FAIL} FRED missing Fed or BOJ data")
+            return False
+
+        fed = fed_df.iloc[-1]
+        boj = boj_df.iloc[-1]
+        signal = compute_rollover_signal(0.0, 0.0, float(fed["rate_pct"]), float(boj["rate_pct"]))
+        direction_str = {1: "LONG", 0: "NEUTRAL", -1: "SHORT"}.get(signal["rollover_direction"], "UNKNOWN")
+
+        print(f"  {PASS} Rollover Data:")
+        print(f"    Fed Funds Rate:    {fed['rate_pct']:.2f}%  (as of {fed['date']})")
+        print(f"    BOJ Policy Rate:   {boj['rate_pct']:.2f}%  (as of {boj['date']})")
+        print(f"    Rate Differential: {signal['rate_differential']:+.2f}%")
+        print(f"    Carry Direction:   {direction_str} (strength: {signal['carry_strength']:.2f})")
+        print(f"    Swap Long  (IC Markets): 0.00 pts = 0.00 EUR/night")
+        print(f"    Swap Short (IC Markets): 0.00 pts = 0.00 EUR/night")
+        print(f"    Note: Swap points require live cTrader connection")
+        return True
+
+    except Exception as exc:
+        print(f"  {FAIL} FRED API error: {exc}")
+        return False
+
+
 def test_rate_limit_budget():
     """Verify Myfxbook rate limit budget is sufficient for configured poll interval."""
     print("\n--- Myfxbook Rate Limit Budget ---")
@@ -170,6 +225,7 @@ async def run_all():
         "ctrader": await test_ctrader_connection(),
         "myfxbook_sentiment": test_myfxbook_sentiment(),
         "telegram": await test_telegram(),
+        "rollover_data": test_rollover_data(),
         "rate_limit": test_rate_limit_budget(),
     }
 

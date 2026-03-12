@@ -127,16 +127,24 @@ async def place_market_order(
         sl_price = _pips_to_price(-direction, entry_price, stop_loss_pips)
         tp_price = _pips_to_price(direction, entry_price, take_profit_pips)
 
+        # Fetch rollover data for this trade
+        from data.rollover_fetcher import get_today_rollover
+        rollover = get_today_rollover(engine)
+
         # Log to DB
         with engine.begin() as conn:
             conn.execute(
                 text("""
                     INSERT INTO trades (
                         opened_at, direction, lots, entry_price,
-                        stop_loss, take_profit, signal_confidence, ctrader_order_id
+                        stop_loss, take_profit, signal_confidence, ctrader_order_id,
+                        rate_differential_at_open, swap_long_at_open, swap_short_at_open,
+                        nights_held, swap_earned_eur
                     ) VALUES (
                         :opened_at, :direction, :lots, :entry_price,
-                        :stop_loss, :take_profit, :signal_confidence, :order_id
+                        :stop_loss, :take_profit, :signal_confidence, :order_id,
+                        :rate_differential_at_open, :swap_long_at_open, :swap_short_at_open,
+                        0, 0.0
                     )
                 """),
                 {
@@ -148,6 +156,9 @@ async def place_market_order(
                     "take_profit": tp_price,
                     "signal_confidence": signal_confidence,
                     "order_id": order_id,
+                    "rate_differential_at_open": rollover["rate_differential"],
+                    "swap_long_at_open":  rollover["swap_long_pts"],
+                    "swap_short_at_open": rollover["swap_short_pts"],
                 },
             )
 
@@ -202,6 +213,25 @@ async def close_position(client, engine, position_id: int, reason: str) -> dict:
         exit_price = position.price / 100_000 if position else 0.0
         pnl_eur = position.netProfit / 100 if position else 0.0
 
+        closed_at = datetime.now(timezone.utc)
+
+        # Fetch trade record to compute swap earnings
+        swap_earned_eur = 0.0
+        nights_held = 0
+        with engine.connect() as conn:
+            trade_row = conn.execute(text("""
+                SELECT opened_at, direction, lots, swap_long_at_open, swap_short_at_open
+                FROM trades
+                WHERE ctrader_order_id = :position_id AND closed_at IS NULL
+                LIMIT 1
+            """), {"position_id": position_id}).fetchone()
+
+        if trade_row:
+            opened_at, trade_dir, trade_lots, swap_long, swap_short = trade_row
+            nights_held = (closed_at.date() - opened_at.date()).days
+            swap_per_night = (swap_long or 0.0) if trade_dir == 1 else (swap_short or 0.0)
+            swap_earned_eur = swap_per_night * (trade_lots or 0.1) * 6.67 * nights_held
+
         # Update DB
         with engine.begin() as conn:
             conn.execute(
@@ -210,15 +240,19 @@ async def close_position(client, engine, position_id: int, reason: str) -> dict:
                     SET closed_at = :closed_at,
                         exit_price = :exit_price,
                         pnl_eur = :pnl_eur,
-                        close_reason = :close_reason
+                        close_reason = :close_reason,
+                        nights_held = :nights_held,
+                        swap_earned_eur = :swap_earned_eur
                     WHERE ctrader_order_id = :position_id
                       AND closed_at IS NULL
                 """),
                 {
-                    "closed_at": datetime.now(timezone.utc),
+                    "closed_at": closed_at,
                     "exit_price": exit_price,
                     "pnl_eur": pnl_eur,
                     "close_reason": reason,
+                    "nights_held": nights_held,
+                    "swap_earned_eur": round(swap_earned_eur, 4),
                     "position_id": position_id,
                 },
             )
@@ -229,9 +263,10 @@ async def close_position(client, engine, position_id: int, reason: str) -> dict:
             "pnl_eur": pnl_eur,
             "close_reason": reason,
             "pnl_pips": (pnl_eur / 8.0) if pnl_eur else 0.0,  # rough estimate
+            "swap_earned_eur": round(swap_earned_eur, 4),
         }
         await send_order_closed(details)
-        log.info(f"Position {position_id} closed: {reason}, PnL={pnl_eur:.2f} EUR")
+        log.info(f"Position {position_id} closed: {reason}, PnL={pnl_eur:.2f} EUR, swap={swap_earned_eur:.4f} EUR")
         return details
 
     except Exception as exc:

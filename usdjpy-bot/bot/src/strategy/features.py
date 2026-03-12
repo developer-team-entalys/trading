@@ -3,12 +3,27 @@ features.py — Build the feature vector for ML prediction.
 """
 import logging
 from sqlalchemy import text
+from data.rollover_fetcher import get_today_rollover
 
 log = logging.getLogger(__name__)
 
 SESSION_MAP = {"tokyo": 0, "london": 1, "new_york": 2, "overlap": 3}
 
 USDJPY_PIP = 0.01
+
+
+def _build_rollover_features(engine) -> dict:
+    """Fetch today's rollover data and return rollover feature dict."""
+    rollover = get_today_rollover(engine)
+    return {
+        "swap_long_pts":     rollover["swap_long_pts"],
+        "swap_long_eur":     rollover["swap_long_eur"],
+        "fed_rate_pct":      rollover["fed_rate_pct"],
+        "boj_rate_pct":      rollover["boj_rate_pct"],
+        "rate_differential": rollover["rate_differential"],
+        "rollover_direction": rollover["rollover_direction"],
+        "carry_strength":    rollover["carry_strength"],
+    }
 
 
 def build_feature_vector(engine, training_phase: int = 1) -> dict:
@@ -139,8 +154,8 @@ def build_feature_vector(engine, training_phase: int = 1) -> dict:
         "distance_to_round": distance_to_round,
         "near_round": near_round,
         "session": session,
-        # Rollover (USD rates > JPY rates → long favorable)
-        "rollover_direction": 1,
+        # Rollover (dynamic from DB — cTrader swap + FRED rates)
+        **_build_rollover_features(engine),
     }
 
     if training_phase == 2:

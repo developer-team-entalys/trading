@@ -18,8 +18,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 sys.path.insert(0, "/app/src")
 
 import config
-from data.db_writer import get_engine, is_table_empty
+from data.db_writer import get_engine, is_table_empty, apply_schema
 from data.cot_fetcher import download_cot_history, fetch_latest_cot, save_cot_to_db
+from data.rollover_fetcher import (
+    download_interest_rate_history, save_interest_rates_to_db,
+    fetch_swap_rates_from_ctrader, compute_rollover_signal,
+    save_rollover_to_db, get_latest_rates, get_today_rollover,
+)
 from data.candle_fetcher import fetch_candles, compute_indicators, save_candles_to_db
 from data.sentiment_fetcher import get_sentiment, save_sentiment_to_db, get_sentiment_count
 from strategy.signal_engine import compute_signal
@@ -149,6 +154,67 @@ async def sunday_weekly_refresh():
         await send_error("Sunday refresh failed", str(exc))
 
 
+async def daily_rollover_refresh():
+    """Every day 06:00 UTC — re-fetch swap rates from cTrader + update rollover_data."""
+    log.info("daily_rollover_refresh.start")
+    engine = get_engine()
+    try:
+        swap_data = {"swap_long_pts": 0.0, "swap_short_pts": 0.0}
+        try:
+            session = await get_session()
+            from sqlalchemy import text as _text
+            with engine.connect() as conn:
+                sym_row = conn.execute(_text(
+                    "SELECT 1"  # placeholder — symbol ID lookup via cTrader
+                )).fetchone()
+            swap_data = fetch_swap_rates_from_ctrader(session.client, 0)
+        except Exception as exc:
+            log.warning("daily_rollover_refresh.swap_unavailable", error=str(exc))
+
+        rates = get_latest_rates(engine)
+        rollover = compute_rollover_signal(
+            swap_long_pts=swap_data["swap_long_pts"],
+            swap_short_pts=swap_data["swap_short_pts"],
+            fed_rate_pct=rates["fed_rate_pct"],
+            boj_rate_pct=rates["boj_rate_pct"],
+        )
+        save_rollover_to_db(rollover, engine)
+        log.info("daily_rollover_refresh.done",
+                 rate_diff=rollover["rate_differential"],
+                 carry_strength=rollover["carry_strength"])
+    except Exception as exc:
+        log.error("daily_rollover_refresh.error", error=str(exc))
+        await send_error("Daily rollover refresh failed", str(exc))
+
+
+async def monthly_rate_refresh():
+    """1st of month 07:00 UTC — re-download FRED interest rate data."""
+    log.info("monthly_rate_refresh.start")
+    engine = get_engine()
+    try:
+        from sqlalchemy import text as _text
+        # Get previous differential for comparison
+        prev_rates = get_latest_rates(engine)
+        prev_diff = prev_rates["rate_differential"]
+
+        rate_df = download_interest_rate_history(config.FRED_API_KEY)
+        if not rate_df.empty:
+            save_interest_rates_to_db(rate_df, engine)
+            new_rates = get_latest_rates(engine)
+            new_diff = new_rates["rate_differential"]
+            change = abs(new_diff - prev_diff)
+            if change > 0.25:
+                log.warning("monthly_rate_refresh.significant_change",
+                            prev_diff=prev_diff, new_diff=new_diff, change=change)
+            log.info("monthly_rate_refresh.done",
+                     fed_rate=new_rates["fed_rate_pct"],
+                     boj_rate=new_rates["boj_rate_pct"],
+                     rate_diff=new_diff)
+    except Exception as exc:
+        log.error("monthly_rate_refresh.error", error=str(exc))
+        await send_error("Monthly rate refresh failed", str(exc))
+
+
 def _compute_weekly_stats(engine) -> dict:
     from sqlalchemy import text
     from datetime import date, timedelta
@@ -208,6 +274,8 @@ async def startup():
             engine = get_engine()
             config.validate_db()
             log.info("startup.db_connected")
+            apply_schema(engine)
+            log.info("startup.schema_applied")
             break
         except Exception as exc:
             log.warning(f"startup.db_not_ready", attempt=attempt, error=str(exc))
@@ -221,6 +289,41 @@ async def startup():
         log.info("startup.ctrader_connected")
     except Exception as exc:
         log.warning("startup.ctrader_failed", error=str(exc))
+
+    # 3b. Initialize rollover & interest rate data
+    _startup_rollover = None
+    try:
+        from sqlalchemy import text as _text
+        with engine.connect() as conn:
+            rate_count = conn.execute(_text("SELECT COUNT(*) FROM interest_rates")).scalar()
+
+        if rate_count == 0:
+            log.info("startup.downloading_rate_history")
+            rate_df = download_interest_rate_history(config.FRED_API_KEY)
+            if not rate_df.empty:
+                save_interest_rates_to_db(rate_df, engine)
+
+        # Fetch live swap rates (will be 0.0 if cTrader not yet approved)
+        swap_data = {"swap_long_pts": 0.0, "swap_short_pts": 0.0}
+        try:
+            _session = await get_session()
+            swap_data = fetch_swap_rates_from_ctrader(_session.client, 0)
+        except Exception as exc:
+            log.warning("startup.swap_rates_unavailable", error=str(exc))
+
+        rates = get_latest_rates(engine)
+        _startup_rollover = compute_rollover_signal(
+            swap_long_pts=swap_data["swap_long_pts"],
+            swap_short_pts=swap_data["swap_short_pts"],
+            fed_rate_pct=rates["fed_rate_pct"],
+            boj_rate_pct=rates["boj_rate_pct"],
+        )
+        save_rollover_to_db(_startup_rollover, engine)
+        log.info("startup.rollover_initialized",
+                 rate_diff=_startup_rollover["rate_differential"],
+                 carry_strength=_startup_rollover["carry_strength"])
+    except Exception as exc:
+        log.warning("startup.rollover_init_failed", error=str(exc))
 
     # 4. Seed COT history if DB is empty
     if is_table_empty("cot_data"):
@@ -264,10 +367,12 @@ async def startup():
     )
     scheduler.add_job(friday_cot_update, CronTrigger(day_of_week="fri", hour=22), id="friday_cot")
     scheduler.add_job(sunday_weekly_refresh, CronTrigger(day_of_week="sun", hour=0), id="sunday_refresh")
+    scheduler.add_job(daily_rollover_refresh, CronTrigger(hour=6, minute=0), id="daily_rollover")
+    scheduler.add_job(monthly_rate_refresh, CronTrigger(day=1, hour=7, minute=0), id="monthly_rates")
     scheduler.start()
 
     next_run = datetime.now(timezone.utc) + timedelta(minutes=config.SENTIMENT_INTERVAL_MIN)
-    await send_bot_started(next_run)
+    await send_bot_started(next_run, rollover=_startup_rollover)
     log.info("startup.complete", next_signal=next_run.isoformat(),
              phase=config.TRAINING_PHASE, timeframe=config.CANDLE_TIMEFRAME)
 
