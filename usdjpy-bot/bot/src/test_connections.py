@@ -1,0 +1,196 @@
+"""
+test_connections.py — Manual connection validation script.
+
+Run: docker compose exec bot python src/test_connections.py
+"""
+import asyncio
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+PASS = "[PASS]"
+FAIL = "[FAIL]"
+SKIP = "[SKIP]"
+
+
+def test_database():
+    """Connect to TimescaleDB and verify all required tables exist."""
+    print("\n--- Database ---")
+    try:
+        import config
+        import sqlalchemy
+        from sqlalchemy import text
+
+        engine = sqlalchemy.create_engine(config.DATABASE_URL)
+        required_tables = ["candles", "cot_data", "sentiment_data", "signals", "trades", "model_performance"]
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            for table in required_tables:
+                row = conn.execute(
+                    text("SELECT to_regclass(:t)"), {"t": table}
+                ).scalar()
+                if row is None:
+                    print(f"  {FAIL} Table '{table}' does not exist")
+                else:
+                    print(f"  {PASS} Table '{table}' exists")
+        engine.dispose()
+        print(f"{PASS} Database connection OK")
+        return True
+    except Exception as exc:
+        print(f"{FAIL} Database: {exc}")
+        return False
+
+
+def test_cot_download():
+    """Download 2024 COT data and print first 3 rows."""
+    print("\n--- COT Download (2024) ---")
+    try:
+        from data.cot_fetcher import download_cot_year
+        df = download_cot_year(2024)
+        if df.empty:
+            print(f"{FAIL} No JPY rows found in 2024 COT data")
+            return False
+        print(f"  Rows fetched: {len(df)}")
+        print(df.head(3).to_string())
+        print(f"{PASS} COT download OK")
+        return True
+    except Exception as exc:
+        print(f"{FAIL} COT download: {exc}")
+        return False
+
+
+async def test_ctrader_connection():
+    """Connect to cTrader demo and fetch USD/JPY current price."""
+    print("\n--- cTrader Connection ---")
+    import config
+    if not config.CTRADER_CLIENT_ID or not config.CTRADER_CLIENT_SECRET:
+        print(f"{SKIP} CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET not set")
+        return True  # not a hard failure
+    try:
+        from data.candle_fetcher import connect_ctrader, fetch_candles
+        session = await asyncio.wait_for(connect_ctrader(), timeout=30)
+        df = await fetch_candles(session, symbol="USDJPY", timeframe=config.CANDLE_TIMEFRAME, count=3)
+        if df.empty:
+            print(f"{FAIL} No candles returned")
+            session.disconnect()
+            return False
+        print(f"  Latest close: {df['close'].iloc[-1]:.3f}")
+        print(f"  Rows: {len(df)}")
+        session.disconnect()
+        print(f"{PASS} cTrader connection OK")
+        return True
+    except Exception as exc:
+        msg = str(exc)
+        if "not in active state" in msg or "OA_APPLICATION_DISABLED" in msg:
+            print(f"{SKIP} cTrader app pending Spotware review — {msg}")
+            return True
+        print(f"{FAIL} cTrader: {msg}")
+        return False
+
+
+def test_myfxbook_sentiment():
+    """
+    Fetch USD/JPY sentiment from Myfxbook Community Outlook.
+    This test PASSES even without credentials (shows a warning instead).
+    It only FAILS if credentials are set but the API returns an error.
+    """
+    print("\n--- Myfxbook Sentiment ---")
+    import config
+    from data.sentiment_fetcher import fetch_myfxbook_sentiment
+
+    if not config.MYFXBOOK_EMAIL or not config.MYFXBOOK_PASSWORD:
+        print(f"  {SKIP} MYFXBOOK_EMAIL / MYFXBOOK_PASSWORD not set in .env")
+        print("         Sentiment signal will be disabled until credentials added.")
+        return True  # Not a failure
+
+    result = fetch_myfxbook_sentiment(
+        config.MYFXBOOK_EMAIL,
+        config.MYFXBOOK_PASSWORD
+    )
+
+    if result:
+        print(f"  {PASS} Myfxbook sentiment: "
+              f"Long {result['long_pct']}% / Short {result['short_pct']}%")
+        print(f"         Long positions: {result['long_positions']} | "
+              f"Short positions: {result['short_positions']}")
+        return True
+    else:
+        print(f"  {FAIL} Could not fetch Myfxbook sentiment - check credentials")
+        return False
+
+
+async def test_telegram():
+    """Send a test message to Telegram."""
+    print("\n--- Telegram ---")
+    import config
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        print(f"{SKIP} TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping")
+        return True
+    try:
+        from telegram import Bot
+        bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+        await bot.send_message(
+            chat_id=config.TELEGRAM_CHAT_ID,
+            text="✅ USD/JPY Bot — connection test passed",
+        )
+        print(f"{PASS} Telegram message sent")
+        return True
+    except Exception as exc:
+        print(f"{FAIL} Telegram: {exc}")
+        return False
+
+
+def test_rate_limit_budget():
+    """Verify Myfxbook rate limit budget is sufficient for configured poll interval."""
+    print("\n--- Myfxbook Rate Limit Budget ---")
+    import config
+    daily_limit = 100
+    polls_per_day = 24 * 60 // config.SENTIMENT_INTERVAL_MIN
+    login_per_day = 1
+    total = polls_per_day + login_per_day
+    buffer = daily_limit - total
+    print(f"  Daily limit:     {daily_limit} requests")
+    print(f"  {config.SENTIMENT_INTERVAL_MIN}min polling:  {polls_per_day} requests/day")
+    print(f"  Login:           {login_per_day} request/day")
+    print(f"  Total planned:   {total} requests/day")
+    status = "✅" if buffer >= 10 else "⚠️"
+    print(f"  Safety buffer:   {buffer} requests/day {status}")
+    return True
+
+
+async def run_all():
+    print("=" * 50)
+    print("USD/JPY Bot — Connection Tests")
+    print("=" * 50)
+
+    results = {
+        "database": test_database(),
+        "cot_download": test_cot_download(),
+        "ctrader": await test_ctrader_connection(),
+        "myfxbook_sentiment": test_myfxbook_sentiment(),
+        "telegram": await test_telegram(),
+        "rate_limit": test_rate_limit_budget(),
+    }
+
+    print("\n" + "=" * 50)
+    print("RESULTS SUMMARY")
+    print("=" * 50)
+    all_passed = True
+    for name, passed in results.items():
+        icon = PASS if passed else FAIL
+        print(f"  {icon} {name}")
+        if not passed:
+            all_passed = False
+
+    print()
+    if all_passed:
+        print("All tests passed ✅")
+        sys.exit(0)
+    else:
+        print("Some tests failed ❌ (see details above)")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(run_all())

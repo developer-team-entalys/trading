@@ -1,0 +1,150 @@
+{
+  "uid": "usdjpy-bot",
+  "title": "USD/JPY Trading Bot",
+  "timezone": "UTC",
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cumulative PnL (EUR)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 16, "h": 8},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT closed_at AS time, SUM(pnl_eur) OVER (ORDER BY closed_at) AS cumulative_pnl FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Win / Loss Ratio",
+      "type": "piechart",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN pnl_eur > 0 THEN 'Win' ELSE 'Loss' END AS metric, COUNT(*) AS value FROM trades WHERE pnl_eur IS NOT NULL GROUP BY 1",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Signal Confidence Distribution",
+      "type": "histogram",
+      "gridPos": {"x": 0, "y": 8, "w": 8, "h": 7},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT time, confidence FROM signals WHERE $__timeFilter(time) ORDER BY time",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Feature Importances (latest model)",
+      "type": "barchart",
+      "gridPos": {"x": 8, "y": 8, "w": 8, "h": 7},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT key AS feature, (value::text)::float AS importance FROM model_performance mp, jsonb_each(feature_importances) WHERE trained_at = (SELECT MAX(trained_at) FROM model_performance) ORDER BY importance DESC LIMIT 15",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "COT Non-Commercial Net Position",
+      "type": "timeseries",
+      "gridPos": {"x": 16, "y": 8, "w": 8, "h": 7},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT week_date AS time, noncomm_net AS \"Net Position\", noncomm_net_pct AS \"Net %\" FROM cot_data ORDER BY week_date",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Retail Sentiment (% Long)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 15, "w": 12, "h": 7},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT time, long_pct AS \"Long %\", short_pct AS \"Short %\" FROM sentiment_data WHERE $__timeFilter(time) ORDER BY time",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 35},
+              {"color": "green", "value": 50},
+              {"color": "yellow", "value": 65},
+              {"color": "red", "value": 80}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Current Open Position",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 15, "w": 6, "h": 7},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN direction = 1 THEN 'LONG' WHEN direction = -1 THEN 'SHORT' ELSE 'NONE' END AS status, lots, entry_price FROM trades WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Daily Drawdown",
+      "type": "gauge",
+      "gridPos": {"x": 18, "y": 15, "w": 6, "h": 7},
+      "datasource": {"type": "postgres", "uid": "${DS_TIMESCALEDB}"},
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(pnl_eur), 0) AS daily_pnl FROM trades WHERE closed_at::date = CURRENT_DATE AND pnl_eur IS NOT NULL",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": -100,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": -100},
+              {"color": "yellow", "value": -50},
+              {"color": "green", "value": 0}
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_TIMESCALEDB",
+        "type": "datasource",
+        "query": "postgres",
+        "current": {"text": "TimescaleDB", "value": "TimescaleDB"}
+      }
+    ]
+  }
+}
