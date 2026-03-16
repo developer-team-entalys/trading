@@ -168,6 +168,102 @@ crontab -l   # verify
 
 ---
 
+## Upgrading an existing deployment
+
+These steps apply when pulling a new version into an environment that is already running. The goal is zero data loss — existing tables and historical data are never touched.
+
+### What changes in this version
+
+| Added | Description |
+|-------|-------------|
+| `dom_raw` table | 1-minute top-5 bid/ask depth snapshots (raw microstructure) |
+| `candles_5m` table | 5-minute OHLCV candles |
+| `tick_volume_1m` table | 1-minute tick count, bid/ask min/max, VWAP |
+| `dom_collector.py` | Raw DOM subscriber — separate from the existing `dom_snapshots` collector |
+| `candle_5m_collector.py` | M5 backfill on startup, then every-5-min refresh |
+| `tick_collector.py` | Spot event subscriber, per-minute flush |
+
+The 30-minute trading cycle, all existing tables, and all stored data are untouched.
+
+### Migration steps
+
+**1. Back up the database first (strongly recommended)**
+
+```bash
+cd usdjpy-bot
+./scripts/backup.sh
+ls -lh backups/*.sql.gz   # confirm backup exists
+```
+
+**2. Pull the new code**
+
+```bash
+git pull origin main
+```
+
+**3. Rebuild and restart only the bot container**
+
+The database container does not need to be touched — TimescaleDB keeps running and retains all data.
+
+```bash
+docker compose up --build -d bot
+```
+
+**4. Verify the new tables were created**
+
+The bot calls `apply_schema()` on every startup, which runs `init.sql` with `CREATE TABLE IF NOT EXISTS` and `create_hypertable(..., if_not_exists => TRUE)`. The 3 new tables are created automatically without affecting existing ones.
+
+```bash
+docker compose exec timescaledb psql -U botuser -d usdjpy_bot -c "\dt"
+# Should now show: dom_raw, candles_5m, tick_volume_1m alongside the existing tables
+```
+
+**5. Check startup logs for the new collectors**
+
+```bash
+docker compose logs bot --tail=40
+```
+
+Expected lines (in order):
+
+```
+startup.dom_subscribed                  ← existing dom_snapshots feed (unchanged)
+candle_5m_collector.backfill_start      ← begins fetching 90 days of M5 bars
+candle_5m_collector.backfill_complete   ← typically takes 30–120 s
+startup.dom_raw_subscribed              ← raw DOM collector active
+startup.ticks_subscribed                ← tick collector active
+startup.collectors_initialized
+```
+
+If cTrader is not yet approved for live data, `startup.dom_raw_subscription_failed` and `startup.tick_subscription_failed` will appear instead — this is non-fatal; the 30-min cycle continues normally.
+
+**6. Confirm data is flowing (after ~2 minutes)**
+
+```bash
+docker compose exec timescaledb psql -U botuser -d usdjpy_bot -c "
+SELECT 'candles_5m'     AS t, COUNT(*) FROM candles_5m
+UNION ALL SELECT 'dom_raw',        COUNT(*) FROM dom_raw
+UNION ALL SELECT 'tick_volume_1m', COUNT(*) FROM tick_volume_1m;"
+```
+
+| Table | Expected |
+|-------|----------|
+| `candles_5m` | thousands of rows (90-day backfill) |
+| `dom_raw` | grows by 1 row per minute |
+| `tick_volume_1m` | grows by 1 row per minute |
+
+### Rolling back
+
+If something goes wrong, restore the backup and revert to the previous image:
+
+```bash
+git checkout HEAD~1 -- usdjpy-bot/bot/src usdjpy-bot/database
+docker compose up --build -d bot
+./scripts/restore.sh backups/<latest>.sql.gz
+```
+
+---
+
 ## Monitoring
 
 - **Grafana**: http://localhost:3000 → "Trading" folder → "USD/JPY Trading Bot"
@@ -243,12 +339,15 @@ Healthy state (after seeding):
 | Table | Expected rows |
 |-------|--------------|
 | `candles` | grows every 30 min |
+| `candles_5m` | ~17 000 after 90-day backfill, grows every 5 min |
 | `cot_data` | 200–400 (weekly since 2010) |
 | `interest_rates` | 300–600 (monthly FRED series) |
 | `vix_data` | ~3 800 (daily since 2010) |
 | `nikkei_data` | ~3 800 (daily since 2010) |
 | `rollover_data` | 1 row updated daily |
 | `dom_snapshots` | grows every 30 min |
+| `dom_raw` | grows every 1 min (0 if cTrader not approved) |
+| `tick_volume_1m` | grows every 1 min (0 if cTrader not approved) |
 
 ---
 
