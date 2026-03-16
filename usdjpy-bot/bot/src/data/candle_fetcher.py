@@ -231,7 +231,7 @@ class CTraderSession:
             if msg_type == 2101:  # ProtoOAApplicationAuthRes
                 req = ProtoOAAccountAuthReq()
                 req.ctidTraderAccountId = config.CTRADER_ACCOUNT_ID
-                req.accessToken = ""  # token-less demo auth
+                req.accessToken = config.CTRADER_ACCESS_TOKEN
                 client.send(req)
             elif msg_type == 2103:  # ProtoOAAccountAuthRes
                 if not authed.done():
@@ -326,15 +326,18 @@ class CTraderSession:
         req.count = count
 
         def on_bars(resp):
+            from ctrader_open_api import Protobuf
+            resp = Protobuf.extract(resp)
             bars = []
             for bar in resp.trendbar:
                 ts = datetime.fromtimestamp(bar.utcTimestampInMinutes * 60, tz=timezone.utc)
+                low = bar.low / 100_000
                 bars.append({
                     "time": ts,
-                    "open": bar.open / 100_000,
-                    "high": (bar.open + bar.high) / 100_000,
-                    "low": (bar.open + bar.low) / 100_000,
-                    "close": (bar.open + bar.close) / 100_000,
+                    "open": (bar.low + bar.deltaOpen) / 100_000,
+                    "high": (bar.low + bar.deltaHigh) / 100_000,
+                    "low": low,
+                    "close": (bar.low + bar.deltaClose) / 100_000,
                     "volume": bar.volume,
                 })
             if not result_future.done():
