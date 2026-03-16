@@ -214,6 +214,7 @@ class CTraderSession:
         self._symbol_id = None
         self._dom_bids: dict[int, dict] = {}  # id -> {price, volume}
         self._dom_asks: dict[int, dict] = {}  # id -> {price, volume}
+        self._message_callbacks: dict[int, list] = {}
 
     async def connect(self) -> "CTraderSession":
         _ensure_reactor_running()
@@ -257,6 +258,12 @@ class CTraderSession:
                         self._dom_bids[q.id] = {"price": q.bid / 100_000, "volume": q.size}
                     elif q.ask:
                         self._dom_asks[q.id] = {"price": q.ask / 100_000, "volume": q.size}
+
+            for cb in self._message_callbacks.get(msg_type, []):
+                try:
+                    cb(message)
+                except Exception as e:
+                    log.error(f"message_callback_error msg_type={msg_type} error={e}")
 
         def on_disconnected(client, reason):
             log.warning(f"cTrader disconnected: {reason}")
@@ -420,6 +427,59 @@ class CTraderSession:
             "order_imbalance": order_imbalance,
             "levels_count": levels_count,
         }
+
+    def register_message_callback(self, msg_type: int, fn) -> None:
+        """Register a callback invoked for every inbound message of msg_type."""
+        self._message_callbacks.setdefault(msg_type, []).append(fn)
+
+    async def fetch_trendbars_range(
+        self,
+        symbol_id: int,
+        from_ms: int,
+        to_ms: int,
+        period_str: str,
+    ) -> list[dict]:
+        """Fetch candles between from_ms and to_ms (epoch milliseconds).
+
+        Uses the same Twisted bridge as fetch_candles. Returns a list of dicts
+        with correct delta-decoded OHLCV values.
+        """
+        period = TIMEFRAME_MAP.get(period_str, ProtoOATrendbarPeriod.M5)
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+
+        req = ProtoOAGetTrendbarsReq()
+        req.ctidTraderAccountId = config.CTRADER_ACCOUNT_ID
+        req.symbolId = symbol_id
+        req.period = period
+        req.fromTimestamp = from_ms
+        req.toTimestamp = to_ms
+
+        def on_bars(resp):
+            from ctrader_open_api import Protobuf
+            resp = Protobuf.extract(resp)
+            bars = []
+            for bar in resp.trendbar:
+                ts = datetime.fromtimestamp(bar.utcTimestampInMinutes * 60, tz=timezone.utc)
+                low = bar.low / 100_000
+                bars.append({
+                    "time": ts,
+                    "open": (bar.low + bar.deltaOpen) / 100_000,
+                    "high": (bar.low + bar.deltaHigh) / 100_000,
+                    "low": low,
+                    "close": (bar.low + bar.deltaClose) / 100_000,
+                    "volume": bar.volume,
+                })
+            if not result_future.done():
+                loop.call_soon_threadsafe(result_future.set_result, bars)
+
+        def _send():
+            self.client.send(req).addCallback(on_bars)
+
+        reactor.callFromThread(_send)
+        bars = await asyncio.wait_for(result_future, timeout=30)
+        log.debug(f"fetch_trendbars_range: {len(bars)} {period_str} bars [{from_ms}..{to_ms}]")
+        return bars
 
     def disconnect(self):
         if self.client:

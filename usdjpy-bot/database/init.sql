@@ -223,3 +223,65 @@ CREATE TABLE IF NOT EXISTS news_events (
     signal_skipped  BOOLEAN         DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_news_time ON news_events (event_time DESC);
+
+-- ── 11. DOM Raw (minute-level top-5 depth snapshots for ML) ─────────────────
+CREATE TABLE IF NOT EXISTS dom_raw (
+    time             TIMESTAMPTZ      NOT NULL,
+    symbol           TEXT             NOT NULL DEFAULT 'USDJPY',
+    bid1_price       DOUBLE PRECISION,
+    bid1_volume      DOUBLE PRECISION,
+    bid2_price       DOUBLE PRECISION,
+    bid2_volume      DOUBLE PRECISION,
+    bid3_price       DOUBLE PRECISION,
+    bid3_volume      DOUBLE PRECISION,
+    bid4_price       DOUBLE PRECISION,
+    bid4_volume      DOUBLE PRECISION,
+    bid5_price       DOUBLE PRECISION,
+    bid5_volume      DOUBLE PRECISION,
+    ask1_price       DOUBLE PRECISION,
+    ask1_volume      DOUBLE PRECISION,
+    ask2_price       DOUBLE PRECISION,
+    ask2_volume      DOUBLE PRECISION,
+    ask3_price       DOUBLE PRECISION,
+    ask3_volume      DOUBLE PRECISION,
+    ask4_price       DOUBLE PRECISION,
+    ask4_volume      DOUBLE PRECISION,
+    ask5_price       DOUBLE PRECISION,
+    ask5_volume      DOUBLE PRECISION,
+    spread_pips      DOUBLE PRECISION,
+    PRIMARY KEY (time, symbol)
+);
+SELECT create_hypertable('dom_raw', 'time',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 day');
+CREATE INDEX IF NOT EXISTS idx_dom_raw_time ON dom_raw (time DESC);
+
+-- ── 12. 5-Minute Candles ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS candles_5m (
+    time    TIMESTAMPTZ      NOT NULL,
+    open    DOUBLE PRECISION NOT NULL,
+    high    DOUBLE PRECISION NOT NULL,
+    low     DOUBLE PRECISION NOT NULL,
+    close   DOUBLE PRECISION NOT NULL,
+    volume  INTEGER          DEFAULT 0,
+    UNIQUE (time)
+);
+SELECT create_hypertable('candles_5m', 'time',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '7 days');
+CREATE INDEX IF NOT EXISTS idx_candles_5m_time ON candles_5m (time DESC);
+
+-- ── 13. Tick Volume (1-minute aggregates) ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tick_volume_1m (
+    time         TIMESTAMPTZ      NOT NULL,
+    symbol       TEXT             NOT NULL DEFAULT 'USDJPY',
+    tick_count   INTEGER          DEFAULT 0,
+    bid_min      DOUBLE PRECISION,
+    bid_max      DOUBLE PRECISION,
+    ask_min      DOUBLE PRECISION,
+    ask_max      DOUBLE PRECISION,
+    vwap_bid     DOUBLE PRECISION,
+    vwap_ask     DOUBLE PRECISION,
+    PRIMARY KEY (time, symbol)
+);
+SELECT create_hypertable('tick_volume_1m', 'time',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 day');
+CREATE INDEX IF NOT EXISTS idx_tick_vol_time ON tick_volume_1m (time DESC);

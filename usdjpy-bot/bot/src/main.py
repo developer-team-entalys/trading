@@ -31,6 +31,9 @@ from data.rollover_fetcher import (
 )
 from data.candle_fetcher import fetch_candles, compute_indicators, save_candles_to_db
 from data.dom_fetcher import save_dom_snapshot_to_db
+from data.dom_collector import subscribe_dom as subscribe_dom_raw, flush_dom_to_db
+from data.candle_5m_collector import backfill_5m_candles, fetch_latest_5m_candle
+from data.tick_collector import subscribe_ticks, flush_ticks_to_db
 from data.sentiment_fetcher import get_sentiment, save_sentiment_to_db, get_sentiment_count
 from strategy.signal_engine import compute_signal
 from strategy.decision_tree import retrain_if_needed, load_model
@@ -275,6 +278,15 @@ def run_daily_backup():
         log.error("run_daily_backup.error", error=str(exc))
 
 
+async def _candle_5m_job():
+    try:
+        session = await get_session()
+        sid = await session.get_symbol_id(config.SYMBOL_NAME)
+        await fetch_latest_5m_candle(session, sid, get_engine())
+    except Exception as exc:
+        log.error("candle_5m_job.error", error=str(exc))
+
+
 def _compute_weekly_stats(engine) -> dict:
     from sqlalchemy import text
     from datetime import date, timedelta
@@ -359,7 +371,35 @@ async def startup():
     except Exception as exc:
         log.warning("startup.dom_subscription_failed", error=str(exc))
 
-    # 3c. Initialize rollover & interest rate data
+    # 3c. Backfill 5-min candle history (best-effort, skips if table non-empty)
+    try:
+        session = await get_session()
+        sid = await session.get_symbol_id(config.SYMBOL_NAME)
+        await backfill_5m_candles(session, sid, engine)
+    except Exception as exc:
+        log.warning("startup.candle_5m_backfill_failed", error=str(exc))
+
+    # 3d. Subscribe DOM raw collector (separate from existing dom_snapshots)
+    try:
+        session = await get_session()
+        sid = await session.get_symbol_id(config.SYMBOL_NAME)
+        await subscribe_dom_raw(session, sid)
+        log.info("startup.dom_raw_subscribed")
+    except Exception as exc:
+        log.warning("startup.dom_raw_subscription_failed", error=str(exc))
+
+    # 3e. Subscribe tick collector
+    try:
+        session = await get_session()
+        sid = await session.get_symbol_id(config.SYMBOL_NAME)
+        await subscribe_ticks(session, sid)
+        log.info("startup.ticks_subscribed")
+    except Exception as exc:
+        log.warning("startup.tick_subscription_failed", error=str(exc))
+
+    log.info("startup.collectors_initialized")
+
+    # 3f. Initialize rollover & interest rate data
     _startup_rollover = None
     try:
         from sqlalchemy import text as _text
@@ -394,7 +434,7 @@ async def startup():
     except Exception as exc:
         log.warning("startup.rollover_init_failed", error=str(exc))
 
-    # 3d. Seed VIX history if table is empty
+    # 3g. Seed VIX history if table is empty
     if is_table_empty("vix_data"):
         log.info("startup.seeding_vix")
         try:
@@ -404,7 +444,7 @@ async def startup():
         except Exception as exc:
             log.error("startup.vix_seed_failed", error=str(exc))
 
-    # 3e. Seed Nikkei history if table is empty
+    # 3h. Seed Nikkei history if table is empty
     if is_table_empty("nikkei_data"):
         log.info("startup.seeding_nikkei")
         try:
@@ -462,6 +502,24 @@ async def startup():
         run_daily_backup,
         CronTrigger(hour=3, minute=15, timezone="UTC"),
         id="daily_backup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        lambda: flush_dom_to_db(get_engine()),
+        CronTrigger(minute="*", second=0, timezone="UTC"),
+        id="dom_flush",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        lambda: flush_ticks_to_db(get_engine()),
+        CronTrigger(minute="*", second=1, timezone="UTC"),
+        id="tick_flush",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _candle_5m_job,
+        CronTrigger(minute="*/5", second=5, timezone="UTC"),
+        id="candle_5m_fetch",
         replace_existing=True,
     )
     scheduler.start()

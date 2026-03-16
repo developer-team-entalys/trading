@@ -77,10 +77,33 @@ SELECT * FROM news_events ORDER BY event_time DESC LIMIT 20;
 
 \echo ''
 \echo '════════════════════════════════════════════════════════════'
+\echo '  dom_raw  (1-min raw depth snapshots)'
+\echo '════════════════════════════════════════════════════════════'
+SELECT time, symbol,
+       bid1_price, bid1_volume, ask1_price, ask1_volume,
+       bid2_price, bid2_volume, ask2_price, ask2_volume,
+       spread_pips
+FROM dom_raw ORDER BY time DESC LIMIT 20;
+
+\echo ''
+\echo '════════════════════════════════════════════════════════════'
+\echo '  candles_5m  (5-min OHLCV)'
+\echo '════════════════════════════════════════════════════════════'
+SELECT * FROM candles_5m ORDER BY time DESC LIMIT 20;
+
+\echo ''
+\echo '════════════════════════════════════════════════════════════'
+\echo '  tick_volume_1m  (1-min tick aggregates)'
+\echo '════════════════════════════════════════════════════════════'
+SELECT * FROM tick_volume_1m ORDER BY time DESC LIMIT 20;
+
+\echo ''
+\echo '════════════════════════════════════════════════════════════'
 \echo '  ROW COUNTS'
 \echo '════════════════════════════════════════════════════════════'
 SELECT
     (SELECT COUNT(*) FROM candles)           AS candles,
+    (SELECT COUNT(*) FROM candles_5m)        AS candles_5m,
     (SELECT COUNT(*) FROM cot_data)          AS cot_data,
     (SELECT COUNT(*) FROM sentiment_data)    AS sentiment_data,
     (SELECT COUNT(*) FROM rollover_data)     AS rollover_data,
@@ -92,4 +115,6 @@ SELECT
     (SELECT COUNT(*) FROM trades)            AS trades,
     (SELECT COUNT(*) FROM model_performance) AS model_performance,
     (SELECT COUNT(*) FROM dom_snapshots)     AS dom_snapshots,
+    (SELECT COUNT(*) FROM dom_raw)           AS dom_raw,
+    (SELECT COUNT(*) FROM tick_volume_1m)    AS tick_volume_1m,
     (SELECT COUNT(*) FROM news_events)       AS news_events;
