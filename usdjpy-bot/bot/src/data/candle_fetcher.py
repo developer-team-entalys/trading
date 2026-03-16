@@ -212,6 +212,8 @@ class CTraderSession:
     def __init__(self):
         self.client = None
         self._symbol_id = None
+        self._dom_bids: dict[int, dict] = {}  # id -> {price, volume}
+        self._dom_asks: dict[int, dict] = {}  # id -> {price, volume}
 
     async def connect(self) -> "CTraderSession":
         _ensure_reactor_running()
@@ -244,6 +246,17 @@ class CTraderSession:
                     loop.call_soon_threadsafe(
                         authed.set_exception, ConnectionError(err_msg)
                     )
+            elif msg_type == 2155:  # ProtoOADepthEvent
+                from ctrader_open_api import Protobuf
+                evt = Protobuf.extract(message)
+                for qid in evt.deletedQuotes:
+                    self._dom_bids.pop(qid, None)
+                    self._dom_asks.pop(qid, None)
+                for q in evt.newQuotes:
+                    if q.bid:
+                        self._dom_bids[q.id] = {"price": q.bid / 100_000, "volume": q.size}
+                    elif q.ask:
+                        self._dom_asks[q.id] = {"price": q.ask / 100_000, "volume": q.size}
 
         def on_disconnected(client, reason):
             log.warning(f"cTrader disconnected: {reason}")
@@ -351,6 +364,62 @@ class CTraderSession:
         df = pd.DataFrame(bars)
         log.info(f"Fetched {len(df)} {timeframe} candles for {symbol}")
         return df
+
+    async def subscribe_dom(self, symbol_id: int) -> None:
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeDepthQuotesReq
+        loop = asyncio.get_running_loop()
+        done = loop.create_future()
+        req = ProtoOASubscribeDepthQuotesReq()
+        req.ctidTraderAccountId = config.CTRADER_ACCOUNT_ID
+        req.symbolId.append(symbol_id)
+
+        def _on_sub(resp):
+            if not done.done():
+                loop.call_soon_threadsafe(done.set_result, True)
+
+        def _send():
+            self.client.send(req).addCallback(_on_sub)
+
+        reactor.callFromThread(_send)
+        await asyncio.wait_for(done, timeout=15)
+        log.info(f"DOM subscription active for symbol_id={symbol_id}")
+
+    def get_dom_snapshot(self, symbol: str = "USDJPY") -> dict:
+        """Return a dict with current order book microstructure metrics."""
+        from datetime import datetime, timezone
+        bids = sorted(self._dom_bids.values(), key=lambda x: x["price"], reverse=True)[:10]
+        asks = sorted(self._dom_asks.values(), key=lambda x: x["price"])[:10]
+
+        best_bid = bids[0]["price"] if bids else None
+        best_ask = asks[0]["price"] if asks else None
+
+        if best_bid is not None and best_ask is not None:
+            spread_pips = (best_ask - best_bid) / USDJPY_PIP
+        else:
+            spread_pips = None
+
+        bid_depth_total = float(sum(q["volume"] for q in bids)) if bids else None
+        ask_depth_total = float(sum(q["volume"] for q in asks)) if asks else None
+
+        if bid_depth_total is not None and ask_depth_total is not None:
+            total = bid_depth_total + ask_depth_total
+            order_imbalance = bid_depth_total / total if total > 0 else 0.5
+        else:
+            order_imbalance = 0.5
+
+        levels_count = len(self._dom_bids) + len(self._dom_asks)
+
+        return {
+            "time": datetime.now(timezone.utc),
+            "symbol": symbol,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "spread_pips": spread_pips,
+            "bid_depth_total": bid_depth_total,
+            "ask_depth_total": ask_depth_total,
+            "order_imbalance": order_imbalance,
+            "levels_count": levels_count,
+        }
 
     def disconnect(self):
         if self.client:

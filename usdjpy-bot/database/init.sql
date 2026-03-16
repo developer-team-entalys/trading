@@ -172,7 +172,24 @@ CREATE TABLE IF NOT EXISTS model_performance (
     model_path                  VARCHAR(255)
 );
 
--- ── 9. News Events (from Finnhub) ──────────────────────────────────────────
+-- ── 9. DOM Snapshots (Depth of Market microstructure) ──────────────────────
+CREATE TABLE IF NOT EXISTS dom_snapshots (
+    time             TIMESTAMPTZ      NOT NULL,
+    symbol           TEXT             NOT NULL DEFAULT 'USDJPY',
+    best_bid         DOUBLE PRECISION,
+    best_ask         DOUBLE PRECISION,
+    spread_pips      DOUBLE PRECISION,
+    bid_depth_total  DOUBLE PRECISION,   -- total volume in top-10 bid levels
+    ask_depth_total  DOUBLE PRECISION,   -- total volume in top-10 ask levels
+    order_imbalance  DOUBLE PRECISION,   -- bid_depth / (bid+ask depth), 0.5 = balanced
+    levels_count     INTEGER,            -- total quotes in book at snapshot time
+    PRIMARY KEY (time, symbol)
+);
+SELECT create_hypertable('dom_snapshots', 'time',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 day');
+CREATE INDEX IF NOT EXISTS idx_dom_time ON dom_snapshots (time DESC);
+
+-- ── 10. News Events (from Finnhub) ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS news_events (
     id              SERIAL PRIMARY KEY,
     event_time      TIMESTAMPTZ     NOT NULL,

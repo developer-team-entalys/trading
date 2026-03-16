@@ -95,6 +95,29 @@ def build_feature_vector(engine, training_phase: int = 1) -> dict:
         near_round = 1 if distance_to_round <= 20 else 0
         session = SESSION_MAP.get(session_str, 0)
 
+        # ── DOM Snapshot (Phase 2 only) ─────────────────────────
+        if training_phase == 2:
+            dom_row = conn.execute(
+                text("""
+                    SELECT spread_pips, order_imbalance, bid_depth_total, ask_depth_total
+                    FROM dom_snapshots
+                    WHERE symbol = 'USDJPY'
+                    ORDER BY time DESC
+                    LIMIT 1
+                """)
+            ).fetchone()
+
+            if dom_row:
+                dom_spread_pips = float(dom_row[0]) if dom_row[0] is not None else None
+                dom_order_imbalance = float(dom_row[1]) if dom_row[1] is not None else 0.5
+                dom_bid_depth = float(dom_row[2]) if dom_row[2] is not None else None
+                dom_ask_depth = float(dom_row[3]) if dom_row[3] is not None else None
+            else:
+                dom_spread_pips = None
+                dom_order_imbalance = 0.5
+                dom_bid_depth = None
+                dom_ask_depth = None
+
         # ── Sentiment (Phase 2 only) ─────────────────────────────
         if training_phase == 2:
             sent_rows = conn.execute(
@@ -169,6 +192,10 @@ def build_feature_vector(engine, training_phase: int = 1) -> dict:
             "avg_short_price": avg_short_price,
             "crowd_pain_long": crowd_pain_long,
             "crowd_pain_short": crowd_pain_short,
+            "dom_spread_pips": dom_spread_pips,
+            "dom_order_imbalance": dom_order_imbalance,
+            "dom_bid_depth": dom_bid_depth,
+            "dom_ask_depth": dom_ask_depth,
         })
 
     log.debug(f"Feature vector (phase={training_phase}): {features}")

@@ -26,6 +26,7 @@ def test_database():
         required_tables = [
             "candles", "cot_data", "sentiment_data", "signals", "trades",
             "model_performance", "rollover_data", "interest_rates", "news_events",
+            "dom_snapshots",
         ]
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -196,6 +197,43 @@ def test_rollover_data():
         return False
 
 
+async def test_dom_subscription():
+    """Subscribe to DOM data for USDJPY and verify book state after 3 seconds."""
+    print("\n--- DOM Subscription ---")
+    import config
+    if not config.CTRADER_CLIENT_ID or not config.CTRADER_CLIENT_SECRET:
+        print(f"{SKIP} CTRADER credentials not set — skipping DOM test")
+        return True
+    try:
+        from data.candle_fetcher import connect_ctrader
+        session = await asyncio.wait_for(connect_ctrader(), timeout=30)
+        symbol_id = await session.get_symbol_id("USDJPY")
+        await session.subscribe_dom(symbol_id)
+        await asyncio.sleep(3)
+        snap = session.get_dom_snapshot()
+        session.disconnect()
+
+        print(f"  Spread:     {snap['spread_pips']:.2f} pips" if snap['spread_pips'] is not None else "  Spread:     N/A")
+        print(f"  Imbalance:  {snap['order_imbalance']:.3f}  (0.5 = balanced)")
+        print(f"  Bid depth:  {snap['bid_depth_total']}")
+        print(f"  Ask depth:  {snap['ask_depth_total']}")
+        print(f"  Levels:     {snap['levels_count']}")
+
+        if snap["levels_count"] > 0:
+            print(f"{PASS} DOM subscription OK")
+            return True
+        else:
+            print(f"{FAIL} DOM book is empty after 3s — market may be closed")
+            return False
+    except Exception as exc:
+        msg = str(exc)
+        if "not in active state" in msg or "OA_APPLICATION_DISABLED" in msg:
+            print(f"{SKIP} cTrader app pending Spotware review — {msg}")
+            return True
+        print(f"{FAIL} DOM subscription: {msg}")
+        return False
+
+
 def test_rate_limit_budget():
     """Verify Myfxbook rate limit budget is sufficient for configured poll interval."""
     print("\n--- Myfxbook Rate Limit Budget ---")
@@ -223,6 +261,7 @@ async def run_all():
         "database": test_database(),
         "cot_download": test_cot_download(),
         "ctrader": await test_ctrader_connection(),
+        "dom_subscription": await test_dom_subscription(),
         "myfxbook_sentiment": test_myfxbook_sentiment(),
         "telegram": await test_telegram(),
         "rollover_data": test_rollover_data(),

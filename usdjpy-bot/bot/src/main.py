@@ -28,6 +28,7 @@ from data.rollover_fetcher import (
     save_rollover_to_db, get_latest_rates, get_today_rollover,
 )
 from data.candle_fetcher import fetch_candles, compute_indicators, save_candles_to_db
+from data.dom_fetcher import save_dom_snapshot_to_db
 from data.sentiment_fetcher import get_sentiment, save_sentiment_to_db, get_sentiment_count
 from strategy.signal_engine import compute_signal
 from strategy.decision_tree import retrain_if_needed, load_model
@@ -74,6 +75,14 @@ async def cycle_job():
             save_candles_to_db(df, engine)
     except Exception as exc:
         log.warning("cycle_job.candles_unavailable", error=str(exc))
+
+    # 1b. Collect DOM snapshot (best-effort — requires active DOM subscription)
+    try:
+        session = await get_session()
+        snap = session.get_dom_snapshot()
+        save_dom_snapshot_to_db(snap, engine)
+    except Exception as exc:
+        log.warning("cycle_job.dom_unavailable", error=str(exc))
 
     # 2. Fetch sentiment (always runs, independent of cTrader)
     try:
@@ -317,7 +326,16 @@ async def startup():
     except Exception as exc:
         log.warning("startup.ctrader_failed", error=str(exc))
 
-    # 3b. Initialize rollover & interest rate data
+    # 3b. Subscribe to DOM data (best-effort)
+    try:
+        session = await get_session()
+        symbol_id = await session.get_symbol_id(config.SYMBOL_NAME)
+        await session.subscribe_dom(symbol_id)
+        log.info("startup.dom_subscribed")
+    except Exception as exc:
+        log.warning("startup.dom_subscription_failed", error=str(exc))
+
+    # 3c. Initialize rollover & interest rate data
     _startup_rollover = None
     try:
         from sqlalchemy import text as _text

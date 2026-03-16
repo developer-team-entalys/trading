@@ -16,3 +16,20 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS training_phase SMALLINT;
 
 ALTER TABLE model_performance ADD COLUMN IF NOT EXISTS training_phase SMALLINT;
 ALTER TABLE model_performance ADD COLUMN IF NOT EXISTS sentiment_rows_available INTEGER;
+
+-- ── DOM Snapshots table (new in v3) ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS dom_snapshots (
+    time             TIMESTAMPTZ      NOT NULL,
+    symbol           TEXT             NOT NULL DEFAULT 'USDJPY',
+    best_bid         DOUBLE PRECISION,
+    best_ask         DOUBLE PRECISION,
+    spread_pips      DOUBLE PRECISION,
+    bid_depth_total  DOUBLE PRECISION,
+    ask_depth_total  DOUBLE PRECISION,
+    order_imbalance  DOUBLE PRECISION,
+    levels_count     INTEGER,
+    PRIMARY KEY (time, symbol)
+);
+SELECT create_hypertable('dom_snapshots', 'time',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 day');
+CREATE INDEX IF NOT EXISTS idx_dom_time ON dom_snapshots (time DESC);

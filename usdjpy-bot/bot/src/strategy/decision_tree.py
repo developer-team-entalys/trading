@@ -49,6 +49,10 @@ FEATURE_COLS_P2 = FEATURE_COLS_P1 + [
     "avg_short_price",
     "crowd_pain_long",
     "crowd_pain_short",
+    "dom_spread_pips",
+    "dom_order_imbalance",
+    "dom_bid_depth",
+    "dom_ask_depth",
 ]
 
 # Legacy alias (used by predict() when phase is unknown)
