@@ -17,6 +17,22 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS training_phase SMALLINT;
 ALTER TABLE model_performance ADD COLUMN IF NOT EXISTS training_phase SMALLINT;
 ALTER TABLE model_performance ADD COLUMN IF NOT EXISTS sentiment_rows_available INTEGER;
 
+-- ── VIX data table (new in v4) ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vix_data (
+    date        DATE             NOT NULL PRIMARY KEY,
+    vix_close   DOUBLE PRECISION NOT NULL,
+    vix_regime  SMALLINT         NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_vix_date ON vix_data (date DESC);
+
+-- ── Nikkei 225 data table (new in v5) ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS nikkei_data (
+    date           DATE             NOT NULL PRIMARY KEY,
+    nikkei_close   DOUBLE PRECISION NOT NULL,
+    nikkei_regime  SMALLINT         NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_nikkei_date ON nikkei_data (date DESC);
+
 -- ── DOM Snapshots table (new in v3) ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS dom_snapshots (
     time             TIMESTAMPTZ      NOT NULL,

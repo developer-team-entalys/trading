@@ -422,6 +422,251 @@ def get_today_rollover(engine) -> dict:
     return defaults
 
 
+def download_vix_history(fred_api_key: str) -> pd.DataFrame:
+    """
+    Download daily VIX (CBOE Volatility Index) history from FRED series VIXCLS.
+
+    Returns DataFrame with columns: date, vix_close, vix_regime
+      vix_regime: -1 = calm (<15), 0 = normal (15–25), 1 = fearful (>25)
+
+    Returns empty DataFrame on error. Never raises.
+    """
+    if not fred_api_key:
+        logger.warning("rollover_fetcher.no_fred_key_vix")
+        return pd.DataFrame()
+
+    try:
+        from fredapi import Fred
+        fred = Fred(api_key=fred_api_key)
+
+        series = fred.get_series('VIXCLS', observation_start='2010-01-01')
+        rows = []
+        for dt, val in series.items():
+            if pd.notna(val):
+                vix_val = float(val)
+                if vix_val < 15:
+                    regime = -1
+                elif vix_val <= 25:
+                    regime = 0
+                else:
+                    regime = 1
+                rows.append({
+                    'date':       dt.date(),
+                    'vix_close':  vix_val,
+                    'vix_regime': regime,
+                })
+
+        df = pd.DataFrame(rows)
+        logger.info("rollover_fetcher.vix_downloaded", rows=len(df))
+        return df
+
+    except Exception as e:
+        logger.error("rollover_fetcher.vix_error", error=str(e))
+        return pd.DataFrame()
+
+
+def save_vix_to_db(df: pd.DataFrame, engine) -> int:
+    """
+    Upsert VIX history into vix_data table.
+    Returns number of rows processed.
+    """
+    if df.empty:
+        return 0
+
+    from sqlalchemy import text
+    rows_inserted = 0
+
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO vix_data (date, vix_close, vix_regime)
+                VALUES (:date, :vix_close, :vix_regime)
+                ON CONFLICT (date) DO UPDATE
+                  SET vix_close  = EXCLUDED.vix_close,
+                      vix_regime = EXCLUDED.vix_regime
+            """), {
+                'date':       row['date'],
+                'vix_close':  row['vix_close'],
+                'vix_regime': int(row['vix_regime']),
+            })
+            rows_inserted += 1
+
+    logger.info("rollover_fetcher.vix_saved", rows=rows_inserted)
+    return rows_inserted
+
+
+def get_latest_vix(engine) -> dict:
+    """
+    Query the most recent VIX reading from vix_data table.
+
+    Returns {'vix_close': float, 'vix_regime': int}
+    Returns neutral defaults (vix_close=20.0, vix_regime=0) if no data.
+    """
+    from sqlalchemy import text
+
+    defaults = {'vix_close': 20.0, 'vix_regime': 0}
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT vix_close, vix_regime
+                FROM vix_data
+                ORDER BY date DESC
+                LIMIT 1
+            """)).fetchone()
+
+        if row:
+            return {'vix_close': float(row[0]), 'vix_regime': int(row[1])}
+    except Exception as e:
+        logger.error("rollover_fetcher.get_vix_error", error=str(e))
+
+    return defaults
+
+
+def get_historical_vix(engine) -> pd.DataFrame:
+    """
+    Query full VIX history from vix_data table, sorted ascending by date.
+    Used by decision_tree.py to merge VIX into training data.
+    Returns empty DataFrame on error.
+    """
+    from sqlalchemy import text
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT date, vix_close, vix_regime
+                FROM vix_data
+                ORDER BY date ASC
+            """)).fetchall()
+
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame(rows, columns=['date', 'vix_close', 'vix_regime'])
+
+    except Exception as e:
+        logger.error("rollover_fetcher.historical_vix_error", error=str(e))
+        return pd.DataFrame()
+
+
+def download_nikkei_history() -> pd.DataFrame:
+    """
+    Download daily Nikkei 225 (^N225) history from Yahoo Finance.
+    No API key required.
+    Returns DataFrame with columns: date, nikkei_close, nikkei_regime
+      nikkei_regime: -1 = down day (<-0.3%), 0 = flat, 1 = up day (>+0.3%)
+    Returns empty DataFrame on error. Never raises.
+    """
+    try:
+        import yfinance as yf
+        raw = yf.download("^N225", start="2010-01-01", progress=False, auto_adjust=True)
+        if raw.empty:
+            logger.warning("rollover_fetcher.nikkei_empty")
+            return pd.DataFrame()
+
+        closes = raw["Close"]
+        if isinstance(closes, pd.DataFrame):
+            closes = closes.iloc[:, 0]
+        closes = closes.dropna()
+        pct    = closes.pct_change()
+        rows   = []
+        for dt, close_val in closes.items():
+            chg = pct.get(dt, float("nan"))
+            if isinstance(chg, pd.Series):
+                chg = chg.iloc[0] if not chg.empty else float("nan")
+            if pd.isna(chg):
+                regime = 0
+            elif chg > 0.003:
+                regime = 1
+            elif chg < -0.003:
+                regime = -1
+            else:
+                regime = 0
+            rows.append({
+                "date":          dt.date() if hasattr(dt, "date") else dt,
+                "nikkei_close":  float(close_val),
+                "nikkei_regime": regime,
+            })
+
+        df = pd.DataFrame(rows)
+        logger.info("rollover_fetcher.nikkei_downloaded", rows=len(df))
+        return df
+
+    except Exception as e:
+        logger.error("rollover_fetcher.nikkei_error", error=str(e))
+        return pd.DataFrame()
+
+
+def save_nikkei_to_db(df: pd.DataFrame, engine) -> int:
+    """Upsert Nikkei history into nikkei_data table. Returns rows processed."""
+    if df.empty:
+        return 0
+
+    from sqlalchemy import text
+    rows_inserted = 0
+
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO nikkei_data (date, nikkei_close, nikkei_regime)
+                VALUES (:date, :nikkei_close, :nikkei_regime)
+                ON CONFLICT (date) DO UPDATE
+                  SET nikkei_close  = EXCLUDED.nikkei_close,
+                      nikkei_regime = EXCLUDED.nikkei_regime
+            """), {
+                "date":          row["date"],
+                "nikkei_close":  row["nikkei_close"],
+                "nikkei_regime": int(row["nikkei_regime"]),
+            })
+            rows_inserted += 1
+
+    logger.info("rollover_fetcher.nikkei_saved", rows=rows_inserted)
+    return rows_inserted
+
+
+def get_latest_nikkei(engine) -> dict:
+    """
+    Query the most recent Nikkei reading.
+    Returns neutral defaults if no data: {'nikkei_close': 0.0, 'nikkei_regime': 0}
+    """
+    from sqlalchemy import text
+    defaults = {"nikkei_close": 0.0, "nikkei_regime": 0}
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT nikkei_close, nikkei_regime
+                FROM nikkei_data
+                ORDER BY date DESC
+                LIMIT 1
+            """)).fetchone()
+        if row:
+            return {"nikkei_close": float(row[0]), "nikkei_regime": int(row[1])}
+    except Exception as e:
+        logger.error("rollover_fetcher.get_nikkei_error", error=str(e))
+    return defaults
+
+
+def get_historical_nikkei(engine) -> pd.DataFrame:
+    """
+    Full Nikkei history sorted ascending. Used by decision_tree for training merge.
+    Returns empty DataFrame on error.
+    """
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT date, nikkei_close, nikkei_regime
+                FROM nikkei_data
+                ORDER BY date ASC
+            """)).fetchall()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows, columns=["date", "nikkei_close", "nikkei_regime"])
+    except Exception as e:
+        logger.error("rollover_fetcher.historical_nikkei_error", error=str(e))
+        return pd.DataFrame()
+
+
 def get_historical_rate_differential(engine) -> pd.DataFrame:
     """
     Query full rate differential history from interest_rates table.

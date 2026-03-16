@@ -31,3 +31,6 @@ structlog==24.1.0
 
 # FRED API (Federal Reserve Economic Data)
 fredapi==0.5.2
+
+# Yahoo Finance (Nikkei 225)
+yfinance>=0.2.36

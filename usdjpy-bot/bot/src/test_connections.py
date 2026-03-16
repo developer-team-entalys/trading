@@ -26,7 +26,7 @@ def test_database():
         required_tables = [
             "candles", "cot_data", "sentiment_data", "signals", "trades",
             "model_performance", "rollover_data", "interest_rates", "news_events",
-            "dom_snapshots",
+            "dom_snapshots", "vix_data", "nikkei_data",
         ]
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -197,6 +197,66 @@ def test_rollover_data():
         return False
 
 
+def test_vix_data():
+    """
+    Test FRED VIX download and print latest reading.
+
+    PASS: API key set and FRED returns VIX data
+    SKIP: FRED_API_KEY not set in .env
+    FAIL: API key set but FRED returns empty
+    """
+    print("\n--- VIX Data (FRED VIXCLS) ---")
+    import config
+    from data.rollover_fetcher import download_vix_history
+
+    if not config.FRED_API_KEY:
+        print(f"  {SKIP} FRED_API_KEY not set — VIX signal will use neutral default (20.0)")
+        return True
+
+    try:
+        df = download_vix_history(config.FRED_API_KEY)
+        if df.empty:
+            print(f"  {FAIL} FRED returned empty VIX data — check API key")
+            return False
+
+        latest = df.sort_values("date").iloc[-1]
+        regime_label = {-1: "CALM", 0: "NORMAL", 1: "FEARFUL"}.get(int(latest["vix_regime"]), "UNKNOWN")
+        print(f"  {PASS} VIX Data:")
+        print(f"    Latest VIX close: {latest['vix_close']:.2f}  (as of {latest['date']})")
+        print(f"    Regime:           {regime_label}  ({int(latest['vix_regime'])}: -1=calm, 0=normal, 1=fearful)")
+        print(f"    Total rows:       {len(df)}")
+        return True
+
+    except Exception as exc:
+        print(f"  {FAIL} VIX data error: {exc}")
+        return False
+
+
+def test_nikkei_data():
+    """
+    Test Yahoo Finance Nikkei 225 download.
+    PASS: yfinance returns ^N225 data
+    FAIL: download returns empty or errors
+    """
+    print("\n--- Nikkei 225 (Yahoo Finance ^N225) ---")
+    from data.rollover_fetcher import download_nikkei_history
+    try:
+        df = download_nikkei_history()
+        if df.empty:
+            print(f"  {FAIL} Yahoo Finance returned empty Nikkei data")
+            return False
+        latest = df.sort_values("date").iloc[-1]
+        regime_label = {-1: "DOWN", 0: "FLAT", 1: "UP"}.get(int(latest["nikkei_regime"]), "UNKNOWN")
+        print(f"  {PASS} Nikkei 225:")
+        print(f"    Latest close: {latest['nikkei_close']:,.0f}  (as of {latest['date']})")
+        print(f"    Regime:       {regime_label}  ({int(latest['nikkei_regime'])}: -1=down, 0=flat, 1=up)")
+        print(f"    Total rows:   {len(df)}")
+        return True
+    except Exception as exc:
+        print(f"  {FAIL} Nikkei data error: {exc}")
+        return False
+
+
 async def test_dom_subscription():
     """Subscribe to DOM data for USDJPY and verify book state after 3 seconds."""
     print("\n--- DOM Subscription ---")
@@ -265,6 +325,8 @@ async def run_all():
         "myfxbook_sentiment": test_myfxbook_sentiment(),
         "telegram": await test_telegram(),
         "rollover_data": test_rollover_data(),
+        "vix_data": test_vix_data(),
+        "nikkei_data": test_nikkei_data(),
         "rate_limit": test_rate_limit_budget(),
     }
 

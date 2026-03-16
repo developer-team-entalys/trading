@@ -3,7 +3,7 @@ features.py — Build the feature vector for ML prediction.
 """
 import logging
 from sqlalchemy import text
-from data.rollover_fetcher import get_today_rollover
+from data.rollover_fetcher import get_today_rollover, get_latest_vix, get_latest_nikkei
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +163,12 @@ def build_feature_vector(engine, training_phase: int = 1) -> dict:
                 crowd_pain_long = 0.0
                 crowd_pain_short = 0.0
 
+    # ── VIX (Phase 1 — always queried) ─────────────────────────────────────
+    vix = get_latest_vix(engine)
+
+    # ── Nikkei 225 (Phase 1 — always queried) ───────────────────────────────
+    nikkei = get_latest_nikkei(engine)
+
     features = {
         # COT
         "cot_noncomm_net_pct": cot_noncomm_net_pct,
@@ -179,6 +185,12 @@ def build_feature_vector(engine, training_phase: int = 1) -> dict:
         "session": session,
         # Rollover (dynamic from DB — cTrader swap + FRED rates)
         **_build_rollover_features(engine),
+        # VIX macro signal
+        "vix_close":  vix["vix_close"],
+        "vix_regime": vix["vix_regime"],
+        # Nikkei 225 equity signal
+        "nikkei_close":  nikkei["nikkei_close"],
+        "nikkei_regime": nikkei["nikkei_regime"],
     }
 
     if training_phase == 2:

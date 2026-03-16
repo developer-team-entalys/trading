@@ -37,6 +37,10 @@ FEATURE_COLS_P1 = [
     "rollover_direction",
     "rate_differential",
     "carry_strength",
+    "vix_close",
+    "vix_regime",
+    "nikkei_close",
+    "nikkei_regime",
 ]
 
 FEATURE_COLS_P2 = FEATURE_COLS_P1 + [
@@ -187,6 +191,43 @@ def build_training_dataset(engine, training_phase: int = 1) -> tuple:
         df["rate_differential"]  = 0.0
         df["rollover_direction"] = 1
         df["carry_strength"]     = 0.0
+
+    # Derived VIX features (Phase 1+2)
+    from data.rollover_fetcher import get_historical_vix
+    vix_df = get_historical_vix(engine)
+    if not vix_df.empty:
+        vix_df["vix_date"] = pd.to_datetime(vix_df["date"]).dt.date
+        df["candle_date"] = pd.to_datetime(df["time"]).dt.date
+        df = pd.merge_asof(
+            df.sort_values("time").reset_index(drop=True),
+            vix_df[["vix_date", "vix_close", "vix_regime"]].sort_values("vix_date").reset_index(drop=True),
+            left_on="candle_date",
+            right_on="vix_date",
+            direction="backward",
+        )
+        df["vix_close"]  = df["vix_close"].fillna(20.0)
+        df["vix_regime"] = df["vix_regime"].fillna(0)
+    else:
+        df["vix_close"]  = 20.0
+        df["vix_regime"] = 0
+
+    # Nikkei features
+    from data.rollover_fetcher import get_historical_nikkei
+    nikkei_df = get_historical_nikkei(engine)
+    if not nikkei_df.empty:
+        nikkei_df["nikkei_date"] = pd.to_datetime(nikkei_df["date"]).dt.date
+        df = pd.merge_asof(
+            df.sort_values("time").reset_index(drop=True),
+            nikkei_df[["nikkei_date", "nikkei_close", "nikkei_regime"]].sort_values("nikkei_date").reset_index(drop=True),
+            left_on="candle_date",
+            right_on="nikkei_date",
+            direction="backward",
+        )
+        df["nikkei_close"]  = df["nikkei_close"].fillna(0.0)
+        df["nikkei_regime"] = df["nikkei_regime"].fillna(0)
+    else:
+        df["nikkei_close"]  = 0.0
+        df["nikkei_regime"] = 0
 
     # Derived sentiment features (Phase 2 only)
     if training_phase == 2:

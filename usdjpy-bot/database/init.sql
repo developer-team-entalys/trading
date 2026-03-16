@@ -112,7 +112,29 @@ CREATE TABLE IF NOT EXISTS interest_rates (
 CREATE INDEX IF NOT EXISTS idx_rates_date ON interest_rates (date DESC);
 CREATE INDEX IF NOT EXISTS idx_rates_series ON interest_rates (series, date DESC);
 
--- ── 6. Signals ─────────────────────────────────────────────────────────────
+-- ── 6. VIX — CBOE Volatility Index (FRED VIXCLS) ───────────────────────────
+CREATE TABLE IF NOT EXISTS vix_data (
+    date        DATE             NOT NULL PRIMARY KEY,
+    vix_close   DOUBLE PRECISION NOT NULL,  -- VIXCLS daily closing value
+    vix_regime  SMALLINT         NOT NULL DEFAULT 0
+    -- -1 = calm (<15, risk-on, JPY weakens)
+    --  0 = normal (15–25)
+    --  1 = fearful (>25, risk-off, JPY strengthens)
+);
+CREATE INDEX IF NOT EXISTS idx_vix_date ON vix_data (date DESC);
+
+-- ── 6b. Nikkei 225 — Japanese equity index (Yahoo Finance ^N225) ─────────────
+CREATE TABLE IF NOT EXISTS nikkei_data (
+    date           DATE             NOT NULL PRIMARY KEY,
+    nikkei_close   DOUBLE PRECISION NOT NULL,  -- ^N225 daily close
+    nikkei_regime  SMALLINT         NOT NULL DEFAULT 0
+    -- -1 = down day (<-0.3%, risk-off, JPY strengthens)
+    --  0 = flat (±0.3%)
+    --  1 = up day (>+0.3%, risk-on, JPY weakens)
+);
+CREATE INDEX IF NOT EXISTS idx_nikkei_date ON nikkei_data (date DESC);
+
+-- ── 7. Signals ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS signals (
     time                TIMESTAMPTZ     NOT NULL,
     direction           SMALLINT,               -- 1=long, -1=short, 0=hold

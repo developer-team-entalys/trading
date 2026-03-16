@@ -26,6 +26,8 @@ from data.rollover_fetcher import (
     download_interest_rate_history, save_interest_rates_to_db,
     fetch_swap_rates_from_ctrader, compute_rollover_signal,
     save_rollover_to_db, get_latest_rates, get_today_rollover,
+    download_vix_history, save_vix_to_db, get_latest_vix,
+    download_nikkei_history, save_nikkei_to_db, get_latest_nikkei,
 )
 from data.candle_fetcher import fetch_candles, compute_indicators, save_candles_to_db
 from data.dom_fetcher import save_dom_snapshot_to_db
@@ -193,6 +195,28 @@ async def daily_rollover_refresh():
         log.info("daily_rollover_refresh.done",
                  rate_diff=rollover["rate_differential"],
                  carry_strength=rollover["carry_strength"])
+
+        try:
+            vix_df = download_vix_history(config.FRED_API_KEY)
+            if not vix_df.empty:
+                save_vix_to_db(vix_df, engine)
+                latest_vix = get_latest_vix(engine)
+                log.info("daily_rollover_refresh.vix_updated",
+                         vix_close=latest_vix["vix_close"],
+                         vix_regime=latest_vix["vix_regime"])
+        except Exception as exc:
+            log.warning("daily_rollover_refresh.vix_unavailable", error=str(exc))
+
+        try:
+            nikkei_df = download_nikkei_history()
+            if not nikkei_df.empty:
+                save_nikkei_to_db(nikkei_df, engine)
+                latest_nikkei = get_latest_nikkei(engine)
+                log.info("daily_rollover_refresh.nikkei_updated",
+                         nikkei_close=latest_nikkei["nikkei_close"],
+                         nikkei_regime=latest_nikkei["nikkei_regime"])
+        except Exception as exc:
+            log.warning("daily_rollover_refresh.nikkei_unavailable", error=str(exc))
     except Exception as exc:
         log.error("daily_rollover_refresh.error", error=str(exc))
         await send_error("Daily rollover refresh failed", str(exc))
@@ -369,6 +393,26 @@ async def startup():
                  carry_strength=_startup_rollover["carry_strength"])
     except Exception as exc:
         log.warning("startup.rollover_init_failed", error=str(exc))
+
+    # 3d. Seed VIX history if table is empty
+    if is_table_empty("vix_data"):
+        log.info("startup.seeding_vix")
+        try:
+            vix_df = download_vix_history(config.FRED_API_KEY)
+            if not vix_df.empty:
+                save_vix_to_db(vix_df, engine)
+        except Exception as exc:
+            log.error("startup.vix_seed_failed", error=str(exc))
+
+    # 3e. Seed Nikkei history if table is empty
+    if is_table_empty("nikkei_data"):
+        log.info("startup.seeding_nikkei")
+        try:
+            nikkei_df = download_nikkei_history()
+            if not nikkei_df.empty:
+                save_nikkei_to_db(nikkei_df, engine)
+        except Exception as exc:
+            log.error("startup.nikkei_seed_failed", error=str(exc))
 
     # 4. Seed COT history if DB is empty
     if is_table_empty("cot_data"):
