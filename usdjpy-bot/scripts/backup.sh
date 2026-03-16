@@ -14,7 +14,7 @@ if [[ -f "$ENV_FILE" ]]; then
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         [[ -z "${line// }" ]] && continue
         export "$line"
-    done < <(grep -E '^(POSTGRES_|TELEGRAM_)' "$ENV_FILE")
+    done < <(grep -E '^(POSTGRES_|TELEGRAM_|BACKUP_REMOTE)' "$ENV_FILE")
 fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -60,6 +60,22 @@ else
     rm -f "$BACKUP_FILE"
     send_telegram "❌ USDJPY backup FAILED: pg_dump error (${TIMESTAMP})"
     exit 1
+fi
+
+# ── Off-device copy (optional) ────────────────────────────────────────────────
+if [[ -n "${BACKUP_REMOTE:-}" ]]; then
+    if command -v rclone &>/dev/null; then
+        echo "[backup] Copying to remote: $BACKUP_REMOTE"
+        if rclone copy "$BACKUP_FILE" "$BACKUP_REMOTE" --contimeout 60s --timeout 300s; then
+            echo "[backup] Remote copy OK"
+            send_telegram "☁️ USDJPY off-device copy OK → ${BACKUP_REMOTE} (${BACKUP_FILE##*/})"
+        else
+            echo "[backup] WARNING: remote copy failed — local backup still intact" >&2
+            send_telegram "⚠️ USDJPY off-device copy FAILED → ${BACKUP_REMOTE} (local backup still OK)"
+        fi
+    else
+        echo "[backup] WARNING: BACKUP_REMOTE is set but rclone is not installed — skipping remote copy" >&2
+    fi
 fi
 
 # ── Prune old backups ─────────────────────────────────────────────────────────

@@ -1,9 +1,8 @@
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
-    platform: linux/amd64
     ports:
-      - "5432:5432"
+      - "5434:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -26,7 +25,6 @@ services:
 
   bot:
     build: ./bot
-    platform: linux/amd64
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -44,7 +42,6 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    platform: linux/amd64
     ports:
       - "3000:3000"
     depends_on:
