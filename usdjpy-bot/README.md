@@ -1,9 +1,3 @@
-# TODO
-
-- add also the DoM data from ctraders
-- get VIX (Fear Index) data from FRED
-- Nikkei daily data from returnYahoo Finance (free, no key)
-
 # USD/JPY Algorithmic Trading Bot
 
 An automated trading bot for USD/JPY that combines:
@@ -25,6 +19,8 @@ Execution via cTrader Open API (IC Markets EU demo/live), monitored via Grafana 
 | Sentiment | IG Markets / Myfxbook | Contrarian: >65% retail long → short signal |
 | Technical | cTrader candles | RSI zones, ATR sizing, round-number proximity |
 | Rollover | Static | USD rates > JPY → long bias (+1) |
+| VIX | FRED VIXCLS | Risk-off (>25) → JPY strength; calm (<15) → JPY weakness |
+| Nikkei 225 | Yahoo Finance ^N225 | Up day → JPY weakness (risk-on); down day → JPY strength |
 | ML | DecisionTree (depth 6) | Combines features; target = ≥20 pip move in 4H |
 
 A trade is placed only when composite confidence ≥ 0.65. Max risk: 1% per trade, €50 daily drawdown cap.
@@ -36,6 +32,7 @@ A trade is placed only when composite confidence ≥ 0.65. Max risk: 1% per trad
 - Docker & Docker Compose v2
 - API credentials (see below)
 - ~2GB disk for TimescaleDB historical data
+- **ARM64 (Raspberry Pi 5) is supported natively** — no emulation needed; all images have `linux/arm64` variants
 
 ### Required Credentials
 
@@ -43,8 +40,10 @@ A trade is placed only when composite confidence ≥ 0.65. Max risk: 1% per trad
 |---------|----------------|
 | cTrader Open API | [openapi.ctrader.com](https://openapi.ctrader.com) — create an app, get Client ID + Secret |
 | IG Markets (optional, for sentiment) | [labs.ig.com](https://labs.ig.com) — register for API key |
+| FRED API key (for VIX + interest rates) | [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html) — free, instant |
 | Telegram bot | Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy token |
 | Telegram chat ID | Message [@userinfobot](https://t.me/userinfobot) → copy your chat ID |
+| Nikkei 225 | No key needed — fetched via `yfinance` (Yahoo Finance `^N225`) |
 
 ---
 
@@ -103,6 +102,72 @@ Resource limits (production): bot=512MB RAM, DB=1GB RAM.
 
 ---
 
+## Raspberry Pi 5 Deployment
+
+The bot runs natively on Pi OS 64-bit (no QEMU emulation). Steps below assume a fresh Pi OS Bookworm (64-bit) install.
+
+### One-time OS + Docker setup
+
+```bash
+# Install Docker (official script works on Pi OS 64-bit)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # log out and back in after this
+```
+
+### Clone and configure
+
+```bash
+git clone <repo-url> usdjpy-bot
+cd usdjpy-bot
+cp .env.example .env
+nano .env   # fill in credentials
+```
+
+### Start services (staggered — DB must be healthy before bot)
+
+```bash
+docker compose up -d timescaledb grafana
+# Wait ~30 s for TimescaleDB to finish initialising
+docker compose up -d bot
+```
+
+### Verify containers are running natively (not emulated)
+
+```bash
+docker inspect usdjpy-bot-timescaledb-1 | grep -i '"Architecture"'
+# Expected: "Architecture": "arm64"
+```
+
+### Off-device backup (recommended — NVMe is reliable but not immune)
+
+```bash
+# Install rclone
+curl https://rclone.org/install.sh | sudo bash
+
+# Configure a remote (interactive — choose B2, GDrive, S3, etc.)
+rclone config
+
+# Enable in .env
+BACKUP_REMOTE=b2:usdjpy-backups   # or gdrive:backups/usdjpy
+
+# Test manually
+./scripts/backup.sh
+# Should print: "[backup] Remote copy OK"
+```
+
+See the [Backup & Restore](#backup--restore) section for the full schedule and restore procedure.
+
+### Set up host cron (Pi-specific path)
+
+```bash
+cd ~/usdjpy-bot
+PROJECT_DIR=$(pwd)
+(crontab -l 2>/dev/null; echo "0 3 * * * $PROJECT_DIR/scripts/backup.sh >> $PROJECT_DIR/backups/backup.log 2>&1") | crontab -
+crontab -l   # verify
+```
+
+---
+
 ## Monitoring
 
 - **Grafana**: http://localhost:3000 → "Trading" folder → "USD/JPY Trading Bot"
@@ -118,6 +183,72 @@ docker cp database/show_tables.sql usdjpy-bot-timescaledb-1:/tmp/show_tables.sql
 ```
 
 Shows the latest 20 rows of every table (candles, cot_data, sentiment_data, signals, trades, model_performance) plus a row-count summary.
+
+---
+
+## Verifying Data Fetching
+
+### Run the connection test suite
+
+```bash
+docker compose exec bot python src/test_connections.py
+```
+
+Expected output (all green):
+
+```
+[PASS] Database connection OK          — TimescaleDB reachable, all 12 tables present
+[PASS] COT download OK                 — CFTC ZIP downloaded, JPY rows found
+[PASS] Myfxbook sentiment OK           — retail long/short % fetched
+[PASS] Telegram OK                     — alert message delivered
+[PASS] VIX Data:                       — FRED VIXCLS downloaded (needs FRED_API_KEY)
+         Latest VIX close: 18.42  (as of 2025-01-10)
+         Regime:           NORMAL
+[PASS] Nikkei 225:                     — Yahoo Finance ^N225 (no key needed)
+         Latest close: 39,894  (as of 2025-01-10)
+         Regime:       FLAT
+[PASS] Rollover data OK
+```
+
+Any `[SKIP]` means the optional API key isn't set (VIX skips if `FRED_API_KEY` is blank).
+Any `[FAIL]` needs investigation.
+
+### Check seeding progress in bot logs
+
+```bash
+docker compose logs -f bot | grep -E 'seeding|seed_failed|rows'
+```
+
+Look for lines like:
+
+```
+startup.seeding_vix
+startup.seeding_nikkei
+startup.seeding_cot
+rollover_fetcher.vix_saved rows=3800
+rollover_fetcher.nikkei_saved rows=3800
+```
+
+Seeding runs at startup; may take 30–90 seconds for large tables.
+
+### Inspect row counts in the database
+
+```bash
+docker cp database/show_tables.sql usdjpy-bot-timescaledb-1:/tmp/show_tables.sql \
+  && docker compose exec timescaledb psql -U botuser -d usdjpy_bot -f /tmp/show_tables.sql
+```
+
+Healthy state (after seeding):
+
+| Table | Expected rows |
+|-------|--------------|
+| `candles` | grows every 30 min |
+| `cot_data` | 200–400 (weekly since 2010) |
+| `interest_rates` | 300–600 (monthly FRED series) |
+| `vix_data` | ~3 800 (daily since 2010) |
+| `nikkei_data` | ~3 800 (daily since 2010) |
+| `rollover_data` | 1 row updated daily |
+| `dom_snapshots` | grows every 30 min |
 
 ---
 
